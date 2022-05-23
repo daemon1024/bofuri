@@ -61,8 +61,7 @@ type bpfProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfMapSpecs struct {
-	InnerArray *ebpf.MapSpec `ebpf:"inner_array"`
-	Outer      *ebpf.MapSpec `ebpf:"outer"`
+	Outer *ebpf.MapSpec `ebpf:"outer"`
 }
 
 // bpfObjects contains all objects after they have been loaded into the kernel.
@@ -84,13 +83,11 @@ func (o *bpfObjects) Close() error {
 //
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfMaps struct {
-	InnerArray *ebpf.Map `ebpf:"inner_array"`
-	Outer      *ebpf.Map `ebpf:"outer"`
+	Outer *ebpf.Map `ebpf:"outer"`
 }
 
 func (m *bpfMaps) Close() error {
 	return _BpfClose(
-		m.InnerArray,
 		m.Outer,
 	)
 }

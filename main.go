@@ -14,10 +14,6 @@ import (
 
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang bpf test.bpf.c -- -I/usr/include/bpf -O2 -g
 
-type data_t struct {
-	fs string
-}
-
 func main() {
 
 	if err := rlimit.RemoveMemlock(); err != nil {
@@ -25,10 +21,10 @@ func main() {
 	}
 
 	log.Println("Waiting for events..")
-	var pidns uint32 = 4026534020
+	var pidns uint32 = 4026533918
 	innerspec := &ebpf.MapSpec{
-		Type:       ebpf.Array,
-		KeySize:    4,
+		Type:       ebpf.Hash,
+		KeySize:    128,
 		ValueSize:  128,
 		MaxEntries: 1024,
 	}
@@ -38,22 +34,20 @@ func main() {
 	}
 	defer inner.Close()
 	var bin [128]byte
-	var test data_t
-	test.fs = "/usr/bin/sleep"
 
 	copy(bin[:], "/usr/bin/sleep")
-	err = inner.Put(uint32(0), bin)
+	err = inner.Put(bin, bin)
 	if err != nil {
 		log.Fatalf("error updating map: %s", err)
 	}
 	var bin2 [128]byte
 	copy(bin2[:], "/usr/bin/ls")
-	err = inner.Put(uint32(1), bin2)
+	err = inner.Put(bin2, bin2)
 	if err != nil {
 		log.Fatalf("error updating map: %s", err)
 	}
 	var s []byte
-	err = inner.Lookup(uint32(1), &s)
+	err = inner.Lookup(bin, &s)
 	if err != nil {
 		log.Fatalf("error looking map: %s", err)
 	}
