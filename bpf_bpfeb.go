@@ -61,7 +61,9 @@ type bpfProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfMapSpecs struct {
-	Outer *ebpf.MapSpec `ebpf:"outer"`
+	Bufs    *ebpf.MapSpec `ebpf:"bufs"`
+	BufsOff *ebpf.MapSpec `ebpf:"bufs_off"`
+	Outer   *ebpf.MapSpec `ebpf:"outer"`
 }
 
 // bpfObjects contains all objects after they have been loaded into the kernel.
@@ -83,11 +85,15 @@ func (o *bpfObjects) Close() error {
 //
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfMaps struct {
-	Outer *ebpf.Map `ebpf:"outer"`
+	Bufs    *ebpf.Map `ebpf:"bufs"`
+	BufsOff *ebpf.Map `ebpf:"bufs_off"`
+	Outer   *ebpf.Map `ebpf:"outer"`
 }
 
 func (m *bpfMaps) Close() error {
 	return _BpfClose(
+		m.Bufs,
+		m.BufsOff,
 		m.Outer,
 	)
 }

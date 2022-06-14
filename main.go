@@ -21,7 +21,7 @@ func main() {
 	}
 
 	log.Println("Waiting for events..")
-	var pidns uint32 = 4026533918
+	var pidns uint32 = 4026533271
 	innerspec := &ebpf.MapSpec{
 		Type:       ebpf.Hash,
 		KeySize:    128,
@@ -33,9 +33,18 @@ func main() {
 		log.Fatalf("error creating inner map: %s", err)
 	}
 	defer inner.Close()
-	var bin [128]byte
 
+	var allow [128]byte
+	copy(allow[:], "allow")
+
+	// err = inner.Put(allow, allow)
+	if err != nil {
+		log.Fatalf("error updating map: %s", err)
+	}
+
+	var bin [128]byte
 	copy(bin[:], "/usr/bin/sleep")
+	copy(bin[64:128], "/usr/bin/bash")
 	err = inner.Put(bin, bin)
 	if err != nil {
 		log.Fatalf("error updating map: %s", err)
