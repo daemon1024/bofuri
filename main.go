@@ -4,7 +4,9 @@
 package main
 
 import (
+	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/cilium/ebpf"
@@ -13,6 +15,14 @@ import (
 )
 
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang bpf test.bpf.c -- -I/usr/include/bpf -O2 -g
+
+const (
+	OWNER     uint8 = 0
+	READ      uint8 = 1
+	DIR       uint8 = 2
+	RECURSIVE uint8 = 3
+	HINT      uint8 = 4
+)
 
 func main() {
 
@@ -33,18 +43,6 @@ func main() {
 		log.Fatalf("error creating inner map: %s", err)
 	}
 	defer inner.Close()
-
-	innerspec2 := &ebpf.MapSpec{
-		Type:       ebpf.Array,
-		KeySize:    4,
-		ValueSize:  128,
-		MaxEntries: 5,
-	}
-	inner2, err := ebpf.NewMap(innerspec2)
-	if err != nil {
-		log.Fatalf("error creating inner map: %s", err)
-	}
-	defer inner2.Close()
 
 	var allow [128]byte
 	copy(allow[:], "allow")
@@ -74,19 +72,8 @@ func main() {
 		log.Fatalf("error updating map: %s", err)
 	}
 
-	var dir [128]byte
-	copy(dir[:], "/home/user1")
-	err = inner2.Put(uint32(0), dir)
-	if err != nil {
-		log.Fatalf("error updating map: %s", err)
-	}
-
-	var dir2 [128]byte
-	copy(dir2[:], "/home/user2")
-	err = inner2.Put(uint32(1), dir2)
-	if err != nil {
-		log.Fatalf("error updating map: %s", err)
-	}
+	dirtoMap("/home/user1/", inner)
+	dirtoMap("/home/user2/", inner)
 
 	var s []byte
 	err = inner.Lookup(bin, &s)
@@ -117,27 +104,6 @@ func main() {
 		log.Fatalf("error updating outer map: %s", err)
 	}
 
-	outer2, err := ebpf.NewMapWithOptions(&ebpf.MapSpec{
-		Type:       ebpf.HashOfMaps,
-		KeySize:    4,
-		ValueSize:  4,
-		MaxEntries: 1024,
-		Pinning:    ebpf.PinByName,
-		InnerMap:   innerspec2,
-		Name:       "outer2",
-	}, ebpf.MapOptions{
-		PinPath: "/sys/fs/bpf",
-	})
-	if err != nil {
-		log.Fatalf("error creating outer map: %s", err)
-	}
-	defer outer2.Unpin()
-	defer outer2.Close()
-
-	err = outer2.Put(pidns, inner2)
-	if err != nil {
-		log.Fatalf("error updating outer2 map: %s", err)
-	}
 	objs := bpfObjects{}
 	if err := loadBpfObjects(&objs, &ebpf.CollectionOptions{
 		Maps: ebpf.MapOptions{
@@ -175,13 +141,34 @@ func main() {
 	}
 	log.Println(i)
 
-	err = objs.bpfMaps.Outer2.Lookup(pidns, &i)
-	if err != nil {
-		log.Fatalf("error looking map: %s", err)
-	}
-	log.Println(i)
-
 	for range ticker.C {
 
 	}
+}
+
+func dirtoMap(p string, m *ebpf.Map) error {
+	paths := strings.Split(p, "/")
+	var dir [128]byte
+	var val [128]byte
+	val[DIR] = 1
+	copy(dir[:], p)
+	err := m.Put(dir, val)
+	if err != nil {
+		return err
+	}
+
+	for i := 1; i < len(paths)-1; i++ {
+		var dir [128]byte
+		var val [128]byte
+		val[HINT] = 1
+		var hint string = strings.Join(paths[0:i], "/") + "/"
+		fmt.Println(hint, len(hint))
+		copy(dir[:], hint)
+		err := m.Put(dir, val)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+
 }

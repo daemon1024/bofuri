@@ -26,44 +26,13 @@ struct key_t {
   u8 fs[ARRAYSIZE];
 };
 
-struct callback_ctx {
-  char *path;
-  bool found;
+struct data_t {
+  bool owner;
+  bool read;
+  bool dir;
+  bool recursive;
+  bool hint;
 };
-
-static bool isindir(const char *a, const char *b) {
-#pragma unroll
-  for (int i = 0; i < ARRAYSIZE; i++) {
-    if (a[i] == '\0')
-      break;
-
-    if (a[i] != b[i])
-      return false;
-  }
-  return true;
-}
-
-static u64 cb_check_path(struct bpf_map *map, u32 *key, char *path,
-                         struct callback_ctx *ctx) {
-  if (path[0] == '\0')
-    return 0;
-
-  bpf_printk("checking ctx->found: %d, path: map_path: %s, ctx_path: %s",
-             ctx->found, path, ctx->path);
-
-  if (isindir(path, ctx->path)) {
-    ctx->found = 1;
-  }
-
-  return 0;
-}
-
-// struct data_net_t {
-//   char fs[ARRAYSIZE];
-//   bool owner;
-//   bool readonly;
-//   bool
-// };
 
 typedef struct buffers {
   u8 buf[MAX_BUFFER_SIZE];
@@ -98,7 +67,6 @@ struct outer_hash {
 };
 
 struct outer_hash outer SEC(".maps");
-struct outer_hash outer2 SEC(".maps");
 
 static __always_inline bufs_t *get_buf(int idx) {
   return bpf_map_lookup_elem(&bufs, &idx);
@@ -186,18 +154,6 @@ static __always_inline bool prepend_path(struct path *path, bufs_t *string_p) {
 
   bpf_probe_read(&(string_p->buf[offset & (MAX_STRING_SIZE - 1)]), 1, &slash);
   set_buf_off(PATH_BUFFER, offset);
-  return true;
-}
-
-static bool isequal(const char *a, const char *b) {
-#pragma unroll
-  for (int i = 0; i < ARRAYSIZE; i++) {
-    if (a[i] == '\0' && b[i] == '\0')
-      break;
-
-    if (a[i] != b[i])
-      return false;
-  }
   return true;
 }
 
@@ -338,26 +294,41 @@ int BPF_PROG(restricted_file_open, struct file *file) {
   if (!inner) {
     return 0;
   }
-  char path[ARRAYSIZE] = {};
-  if (bpf_d_path(&file->f_path, path, ARRAYSIZE) < 0) {
+  char path[MAX_STRING_SIZE] = {};
+  if (bpf_d_path(&file->f_path, path, MAX_STRING_SIZE) < 0) {
     return 0;
   }
   bpf_printk("file access %s", path);
 
-  u32 *inner2 = bpf_map_lookup_elem(&outer2, &pid_ns);
+  char dir[MAX_STRING_SIZE] = {};
+  char null = '\0';
 
-  if (!inner2) {
-    return 0;
+#pragma unroll
+  for (int i = 0; i < ARRAYSIZE; i++) {
+    if (path[i] == '\0')
+      break;
+
+    if (path[i] == '/') {
+      __builtin_memset(&dir, 0, sizeof(dir));
+      bpf_probe_read_str(&dir, i + 2, path);
+
+      struct data_t *val = bpf_map_lookup_elem(inner, &dir);
+      bpf_printk("checking sub directory access %s", dir);
+      if (val) {
+        bpf_printk("got value");
+        if (val->dir) {
+          bpf_printk("matched");
+          return -EPERM;
+        }
+        if (val->hint == 0) {
+          break;
+        }
+        bpf_printk("hint true");
+      } else {
+        break;
+      }
+    }
   }
 
-  // return 0;
-
-  struct callback_ctx cb = {.path = path, .found = false};
-  cb.found = false;
-  bpf_for_each_map_elem(inner2, cb_check_path, &cb, 0);
-  if (cb.found) {
-    bpf_printk("Access Denied: %s\n", cb.path);
-    return -EPERM;
-  }
   return 0;
 }

@@ -66,7 +66,6 @@ type bpfMapSpecs struct {
 	Bufs    *ebpf.MapSpec `ebpf:"bufs"`
 	BufsOff *ebpf.MapSpec `ebpf:"bufs_off"`
 	Outer   *ebpf.MapSpec `ebpf:"outer"`
-	Outer2  *ebpf.MapSpec `ebpf:"outer2"`
 }
 
 // bpfObjects contains all objects after they have been loaded into the kernel.
@@ -91,7 +90,6 @@ type bpfMaps struct {
 	Bufs    *ebpf.Map `ebpf:"bufs"`
 	BufsOff *ebpf.Map `ebpf:"bufs_off"`
 	Outer   *ebpf.Map `ebpf:"outer"`
-	Outer2  *ebpf.Map `ebpf:"outer2"`
 }
 
 func (m *bpfMaps) Close() error {
@@ -99,7 +97,6 @@ func (m *bpfMaps) Close() error {
 		m.Bufs,
 		m.BufsOff,
 		m.Outer,
-		m.Outer2,
 	)
 }
 
