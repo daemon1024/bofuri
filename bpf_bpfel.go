@@ -54,7 +54,9 @@ type bpfSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfProgramSpecs struct {
-	BprmStuff *ebpf.ProgramSpec `ebpf:"bprm_stuff"`
+	BprmStuff          *ebpf.ProgramSpec `ebpf:"bprm_stuff"`
+	RestrictedFileOpen *ebpf.ProgramSpec `ebpf:"restricted_file_open"`
+	SocketConnect      *ebpf.ProgramSpec `ebpf:"socket_connect"`
 }
 
 // bpfMapSpecs contains maps before they are loaded into the kernel.
@@ -64,6 +66,7 @@ type bpfMapSpecs struct {
 	Bufs    *ebpf.MapSpec `ebpf:"bufs"`
 	BufsOff *ebpf.MapSpec `ebpf:"bufs_off"`
 	Outer   *ebpf.MapSpec `ebpf:"outer"`
+	Outer2  *ebpf.MapSpec `ebpf:"outer2"`
 }
 
 // bpfObjects contains all objects after they have been loaded into the kernel.
@@ -88,6 +91,7 @@ type bpfMaps struct {
 	Bufs    *ebpf.Map `ebpf:"bufs"`
 	BufsOff *ebpf.Map `ebpf:"bufs_off"`
 	Outer   *ebpf.Map `ebpf:"outer"`
+	Outer2  *ebpf.Map `ebpf:"outer2"`
 }
 
 func (m *bpfMaps) Close() error {
@@ -95,6 +99,7 @@ func (m *bpfMaps) Close() error {
 		m.Bufs,
 		m.BufsOff,
 		m.Outer,
+		m.Outer2,
 	)
 }
 
@@ -102,12 +107,16 @@ func (m *bpfMaps) Close() error {
 //
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfPrograms struct {
-	BprmStuff *ebpf.Program `ebpf:"bprm_stuff"`
+	BprmStuff          *ebpf.Program `ebpf:"bprm_stuff"`
+	RestrictedFileOpen *ebpf.Program `ebpf:"restricted_file_open"`
+	SocketConnect      *ebpf.Program `ebpf:"socket_connect"`
 }
 
 func (p *bpfPrograms) Close() error {
 	return _BpfClose(
 		p.BprmStuff,
+		p.RestrictedFileOpen,
+		p.SocketConnect,
 	)
 }
 

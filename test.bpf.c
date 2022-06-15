@@ -22,14 +22,48 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
   })
 
 struct key_t {
-  char proc[ARRAYSIZE];
-  char fs[ARRAYSIZE];
+  u8 proc[ARRAYSIZE];
+  u8 fs[ARRAYSIZE];
 };
 
-struct data_t {
-  char fs[ARRAYSIZE];
-  // bool owner;
+struct callback_ctx {
+  char *path;
+  bool found;
 };
+
+static bool isindir(const char *a, const char *b) {
+#pragma unroll
+  for (int i = 0; i < ARRAYSIZE; i++) {
+    if (a[i] == '\0')
+      break;
+
+    if (a[i] != b[i])
+      return false;
+  }
+  return true;
+}
+
+static u64 cb_check_path(struct bpf_map *map, u32 *key, char *path,
+                         struct callback_ctx *ctx) {
+  if (path[0] == '\0')
+    return 0;
+
+  bpf_printk("checking ctx->found: %d, path: map_path: %s, ctx_path: %s",
+             ctx->found, path, ctx->path);
+
+  if (isindir(path, ctx->path)) {
+    ctx->found = 1;
+  }
+
+  return 0;
+}
+
+// struct data_net_t {
+//   char fs[ARRAYSIZE];
+//   bool owner;
+//   bool readonly;
+//   bool
+// };
 
 typedef struct buffers {
   u8 buf[MAX_BUFFER_SIZE];
@@ -61,7 +95,10 @@ struct outer_hash {
   __uint(key_size, sizeof(u32));
   __uint(value_size, sizeof(u32));
   __uint(pinning, LIBBPF_PIN_BY_NAME);
-} outer SEC(".maps");
+};
+
+struct outer_hash outer SEC(".maps");
+struct outer_hash outer2 SEC(".maps");
 
 static __always_inline bufs_t *get_buf(int idx) {
   return bpf_map_lookup_elem(&bufs, &idx);
@@ -79,7 +116,8 @@ static inline struct mount *real_mount(struct vfsmount *mnt) {
   return container_of(mnt, struct mount, mnt);
 }
 
-// Explained in https://github.com/chriskaliX/Hades/blob/1830ee4c19101faaba896186b5e200258bc15860/plugin/driver/eBPF/kernel/include/utils.h#L98
+// Explained in
+// https://github.com/chriskaliX/Hades/blob/1830ee4c19101faaba896186b5e200258bc15860/plugin/driver/eBPF/kernel/include/utils.h#L98
 static __always_inline bool prepend_path(struct path *path, bufs_t *string_p) {
   char slash = '/';
   char null = '\0';
@@ -251,4 +289,75 @@ int BPF_PROG(bprm_stuff, struct linux_binprm *bprm, int ret) {
   }
 
   return ret;
+}
+
+SEC("lsm/socket_connect")
+int BPF_PROG(socket_connect, struct socket *sock, struct sockaddr *address,
+             int addrlen) {
+  struct task_struct *t = (struct task_struct *)bpf_get_current_task();
+  u32 pid_ns = get_task_pid_ns_id(t);
+
+  if (pid_ns == PROC_PID_INIT_INO) {
+    return 0;
+  }
+
+  u32 *inner = bpf_map_lookup_elem(&outer, &pid_ns);
+
+  bpf_printk("%u", pid_ns);
+  if (!inner) {
+    return 0;
+  }
+  bpf_printk("family %d", address->sa_family);
+  bpf_printk("type sock %d, type sock sk %d, protocol %d", sock->type,
+             sock->sk->sk_type, sock->sk->sk_protocol);
+
+  struct key_t p;
+  __builtin_memset(&p, 0, sizeof(p));
+
+  p.proc[0] = sock->sk->sk_protocol;
+
+  if (bpf_map_lookup_elem(inner, &p)) {
+    bpf_printk("denying protocol %d", sock->sk->sk_protocol);
+    return -EPERM;
+  }
+  return 0;
+}
+
+SEC("lsm/file_open")
+int BPF_PROG(restricted_file_open, struct file *file) {
+  struct task_struct *t = (struct task_struct *)bpf_get_current_task();
+  u32 pid_ns = get_task_pid_ns_id(t);
+
+  if (pid_ns == PROC_PID_INIT_INO) {
+    return 0;
+  }
+
+  u32 *inner = bpf_map_lookup_elem(&outer, &pid_ns);
+
+  bpf_printk("%u", pid_ns);
+  if (!inner) {
+    return 0;
+  }
+  char path[ARRAYSIZE] = {};
+  if (bpf_d_path(&file->f_path, path, ARRAYSIZE) < 0) {
+    return 0;
+  }
+  bpf_printk("file access %s", path);
+
+  u32 *inner2 = bpf_map_lookup_elem(&outer2, &pid_ns);
+
+  if (!inner2) {
+    return 0;
+  }
+
+  // return 0;
+
+  struct callback_ctx cb = {.path = path, .found = false};
+  cb.found = false;
+  bpf_for_each_map_elem(inner2, cb_check_path, &cb, 0);
+  if (cb.found) {
+    bpf_printk("Access Denied: %s\n", cb.path);
+    return -EPERM;
+  }
+  return 0;
 }
