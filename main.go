@@ -30,12 +30,18 @@ func main() {
 		log.Fatal(err)
 	}
 
+	log.Printf("Checking hash sl %d", JHash([]byte("/bin/sleep"), 0))
+	log.Printf("Checking hash procfs %d", JHash(append([]byte("/bin/sleep"), []byte("/bin/bash")...), 0))
+	log.Printf("Checking hash bh %d", JHash([]byte("/bin/bash"), 0))
+	log.Printf("Checking hash proc+fs %d", JHash([]byte("/bin/sleep"), 0)+JHash([]byte("/bin/bash"), 0))
+
 	log.Println("Waiting for events..")
 	var pidns uint32 = 4026533271
+	var mntns uint32 = 4026533265
 	innerspec := &ebpf.MapSpec{
 		Type:       ebpf.Hash,
-		KeySize:    128,
-		ValueSize:  128,
+		KeySize:    4,
+		ValueSize:  8,
 		MaxEntries: 1024,
 	}
 	inner, err := ebpf.NewMap(innerspec)
@@ -44,7 +50,7 @@ func main() {
 	}
 	defer inner.Close()
 
-	var allow [128]byte
+	var allow [8]byte
 	copy(allow[:], "allow")
 
 	// err = inner.Put(allow, allow)
@@ -54,20 +60,21 @@ func main() {
 
 	var bin [128]byte
 	copy(bin[:], "/bin/sleep")
+	log.Printf("Checking hash %d %d", JHash(bin[:], 0), len(bin))
 	copy(bin[64:128], "/bin/bash")
-	err = inner.Put(bin, bin)
+	err = inner.Put(JHash([]byte("/bin/sleep"), 0)+JHash([]byte("/bin/bash"), 0), allow)
 	if err != nil {
 		log.Fatalf("error updating map: %s", err)
 	}
 	var bin2 [128]byte
 	copy(bin2[:], "/bin/ls")
-	err = inner.Put(bin2, bin2)
+	err = inner.Put(JHash([]byte("/bin/ls"), 0), allow)
 	if err != nil {
 		log.Fatalf("error updating map: %s", err)
 	}
-	var net [128]byte
+	var net [4]byte
 	net[0] = 17
-	err = inner.Put(net, net)
+	err = inner.Put(net, allow)
 	if err != nil {
 		log.Fatalf("error updating map: %s", err)
 	}
@@ -76,7 +83,7 @@ func main() {
 	dirtoMap("/home/user2/", inner)
 
 	var s []byte
-	err = inner.Lookup(bin, &s)
+	err = inner.Lookup(JHash([]byte("/bin/ls"), 0), &s)
 	if err != nil {
 		log.Fatalf("error looking map: %s", err)
 	}
@@ -84,7 +91,7 @@ func main() {
 
 	outer, err := ebpf.NewMapWithOptions(&ebpf.MapSpec{
 		Type:       ebpf.HashOfMaps,
-		KeySize:    4,
+		KeySize:    8,
 		ValueSize:  4,
 		MaxEntries: 1024,
 		Pinning:    ebpf.PinByName,
@@ -99,7 +106,7 @@ func main() {
 	defer outer.Unpin()
 	defer outer.Close()
 
-	err = outer.Put(pidns, inner)
+	err = outer.Put([]uint32{pidns, mntns}, inner)
 	if err != nil {
 		log.Fatalf("error updating outer map: %s", err)
 	}
@@ -135,7 +142,7 @@ func main() {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 	var i uint32
-	err = objs.bpfMaps.Outer.Lookup(pidns, &i)
+	err = objs.bpfMaps.Outer.Lookup([]uint32{pidns, mntns}, &i)
 	if err != nil {
 		log.Fatalf("error looking map: %s", err)
 	}
@@ -148,23 +155,19 @@ func main() {
 
 func dirtoMap(p string, m *ebpf.Map) error {
 	paths := strings.Split(p, "/")
-	var dir [128]byte
-	var val [128]byte
+	var val [8]byte
 	val[DIR] = 1
-	copy(dir[:], p)
-	err := m.Put(dir, val)
+	err := m.Put(JHash([]byte(p), 0), val)
 	if err != nil {
 		return err
 	}
 
 	for i := 1; i < len(paths)-1; i++ {
-		var dir [128]byte
-		var val [128]byte
+		var val [8]byte
 		val[HINT] = 1
 		var hint string = strings.Join(paths[0:i], "/") + "/"
 		fmt.Println(hint, len(hint))
-		copy(dir[:], hint)
-		err := m.Put(dir, val)
+		err := m.Put(JHash([]byte(hint), 0), val)
 		if err != nil {
 			return err
 		}

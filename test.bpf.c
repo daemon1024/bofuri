@@ -1,14 +1,13 @@
 // +build ignore
 
-#include "vmlinux.h"
+#include "hash.h"
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 #define EPERM 1
-#define ARRAYSIZE 64
-#define MAX_STRING_SIZE 128
+#define MAX_STRING_SIZE 64
 #define MAX_BUFFER_SIZE 512
 #define MAX_BUFFERS 1
 #define PATH_BUFFER 0
@@ -22,8 +21,8 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
   })
 
 struct key_t {
-  u8 proc[ARRAYSIZE];
-  u8 fs[ARRAYSIZE];
+  char proc[MAX_STRING_SIZE];
+  char fs[MAX_STRING_SIZE];
 };
 
 struct data_t {
@@ -58,10 +57,15 @@ struct {
   __uint(max_entries, MAX_BUFFERS);
 } bufs_off SEC(".maps");
 
+struct outer_key {
+  u32 pid_ns;
+  u32 mnt_ns;
+};
+
 struct outer_hash {
   __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
   __uint(max_entries, 1024);
-  __uint(key_size, sizeof(u32));
+  __uint(key_size, sizeof(struct outer_key));
   __uint(value_size, sizeof(u32));
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 };
@@ -166,22 +170,44 @@ static __always_inline u32 get_task_pid_ns_id(struct task_struct *task) {
   return get_pid_ns_id(READ_KERN(task->nsproxy));
 }
 
+static __always_inline u32 get_task_mnt_ns_id(struct task_struct *task) {
+  return BPF_CORE_READ(task, nsproxy, mnt_ns, ns).inum;
+}
+
 static struct file *get_task_file(struct task_struct *t) {
   return BPF_CORE_READ(t, mm, exe_file);
+}
+
+/* strlen determines the length of a fixed-size string */
+static size_t strnlen(const char *str) {
+  if (!str)
+    return 0;
+
+  size_t maxlen = __SIZE_MAX__ - 1;
+
+  size_t i = 0;
+
+  while (i < maxlen && str[i] != '\0')
+    i++;
+
+  return i;
 }
 
 SEC("lsm/bprm_check_security")
 int BPF_PROG(bprm_stuff, struct linux_binprm *bprm, int ret) {
   struct task_struct *t = (struct task_struct *)bpf_get_current_task();
-  u32 pid_ns = get_task_pid_ns_id(t);
 
-  if (pid_ns == PROC_PID_INIT_INO) {
+  struct outer_key okey = {.pid_ns = get_task_pid_ns_id(t),
+                           .mnt_ns = get_task_mnt_ns_id(t)};
+
+  if (okey.pid_ns == PROC_PID_INIT_INO) {
     return 0;
   }
 
-  u32 *inner = bpf_map_lookup_elem(&outer, &pid_ns);
+  bpf_printk("%u", okey.pid_ns);
+  bpf_printk("%u", okey.mnt_ns);
+  u32 *inner = bpf_map_lookup_elem(&outer, &okey);
 
-  bpf_printk("%u", pid_ns);
   if (!inner) {
     return 0;
   }
@@ -192,13 +218,17 @@ int BPF_PROG(bprm_stuff, struct linux_binprm *bprm, int ret) {
           p)); // Important to initalise empty, spent a day for this :facepalm:
 
   // check for whitelist/blacklist posture
-  char allow_key[ARRAYSIZE] = "allow";
+  char allow_key[MAX_STRING_SIZE] = "allow";
   char *allow = bpf_map_lookup_elem(inner, &allow_key);
 
-  bpf_probe_read_str(&p.proc, ARRAYSIZE, bprm->filename);
+  bpf_probe_read_str(&p.proc, MAX_STRING_SIZE, bprm->filename);
+
+  u32 k = jenkins_hash(p.proc, strnlen(p.proc), 0);
+
+  bpf_printk("checking hashed value for %s %u \n", p.proc, k);
 
   // look up only path in the map
-  struct data_t *val = bpf_map_lookup_elem(inner, &p);
+  struct data_t *val = bpf_map_lookup_elem(inner, &k);
   if (allow) {
     if (!val) {
       bpf_printk("denying %s due to not in allowlist \n", p.proc);
@@ -227,9 +257,18 @@ int BPF_PROG(bprm_stuff, struct linux_binprm *bprm, int ret) {
   if (offset == NULL)
     return ret;
 
-  bpf_probe_read(&p.fs, ARRAYSIZE,
-                 &string_buf->buf[*offset & (MAX_STRING_SIZE - 1)]);
-  val = bpf_map_lookup_elem(inner, &p);
+  char dir[MAX_STRING_SIZE] = {};
+  bpf_probe_read_str(&dir, MAX_STRING_SIZE,
+                     &string_buf->buf[*offset & (MAX_STRING_SIZE - 1)]);
+
+  // some verifier error when we try to call strnlen(dir) here
+  u32 kfs = jenkins_hash(dir, 9, 0);
+  bpf_printk("checking hashed value for %s %u %d\n", dir, kfs);
+  bpf_printk("checking combined hashed value %u\n", k + kfs);
+
+  kfs = k + kfs;
+
+  val = bpf_map_lookup_elem(inner, &kfs);
   if (allow) {
     if (!val) {
       bpf_printk("denying %s with source %s due to not in allowlist \n", p.proc,
@@ -251,15 +290,18 @@ SEC("lsm/socket_connect")
 int BPF_PROG(socket_connect, struct socket *sock, struct sockaddr *address,
              int addrlen) {
   struct task_struct *t = (struct task_struct *)bpf_get_current_task();
-  u32 pid_ns = get_task_pid_ns_id(t);
 
-  if (pid_ns == PROC_PID_INIT_INO) {
+  struct outer_key okey = {.pid_ns = get_task_pid_ns_id(t),
+                           .mnt_ns = get_task_mnt_ns_id(t)};
+
+  if (okey.pid_ns == PROC_PID_INIT_INO) {
     return 0;
   }
 
-  u32 *inner = bpf_map_lookup_elem(&outer, &pid_ns);
+  bpf_printk("%u", okey.pid_ns);
+  bpf_printk("%u", okey.mnt_ns);
+  u32 *inner = bpf_map_lookup_elem(&outer, &okey);
 
-  bpf_printk("%u", pid_ns);
   if (!inner) {
     return 0;
   }
@@ -282,15 +324,18 @@ int BPF_PROG(socket_connect, struct socket *sock, struct sockaddr *address,
 SEC("lsm/file_open")
 int BPF_PROG(restricted_file_open, struct file *file) {
   struct task_struct *t = (struct task_struct *)bpf_get_current_task();
-  u32 pid_ns = get_task_pid_ns_id(t);
 
-  if (pid_ns == PROC_PID_INIT_INO) {
+  struct outer_key okey = {.pid_ns = get_task_pid_ns_id(t),
+                           .mnt_ns = get_task_mnt_ns_id(t)};
+
+  if (okey.pid_ns == PROC_PID_INIT_INO) {
     return 0;
   }
 
-  u32 *inner = bpf_map_lookup_elem(&outer, &pid_ns);
+  // bpf_printk("%u", okey.pid_ns);
+  // bpf_printk("%u", okey.mnt_ns);
+  u32 *inner = bpf_map_lookup_elem(&outer, &okey);
 
-  bpf_printk("%u", pid_ns);
   if (!inner) {
     return 0;
   }
@@ -298,13 +343,13 @@ int BPF_PROG(restricted_file_open, struct file *file) {
   if (bpf_d_path(&file->f_path, path, MAX_STRING_SIZE) < 0) {
     return 0;
   }
-  bpf_printk("file access %s", path);
+  // bpf_printk("file access %s", path);
 
   char dir[MAX_STRING_SIZE] = {};
-  char null = '\0';
+  u32 fp = 0;
 
 #pragma unroll
-  for (int i = 0; i < ARRAYSIZE; i++) {
+  for (int i = 0; i < MAX_STRING_SIZE; i++) {
     if (path[i] == '\0')
       break;
 
@@ -312,18 +357,20 @@ int BPF_PROG(restricted_file_open, struct file *file) {
       __builtin_memset(&dir, 0, sizeof(dir));
       bpf_probe_read_str(&dir, i + 2, path);
 
-      struct data_t *val = bpf_map_lookup_elem(inner, &dir);
-      bpf_printk("checking sub directory access %s", dir);
+      fp = jenkins_hash(dir, i + 1, 0);
+
+      struct data_t *val = bpf_map_lookup_elem(inner, &fp);
+      // bpf_printk("checking sub directory access %s", dir);
       if (val) {
-        bpf_printk("got value");
+        // bpf_printk("got value");
         if (val->dir) {
-          bpf_printk("matched");
+          // bpf_printk("matched");
           return -EPERM;
         }
         if (val->hint == 0) {
           break;
         }
-        bpf_printk("hint true");
+        // bpf_printk("hint true");
       } else {
         break;
       }
